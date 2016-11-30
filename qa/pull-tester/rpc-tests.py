@@ -29,6 +29,7 @@ import subprocess
 import tempfile
 import re
 
+sys.path.append("qa/pull-tester/")
 from tests_config import *
 
 BOLD = ("","")
@@ -37,7 +38,7 @@ if os.name == 'posix':
     # terminal via ANSI escape sequences:
     BOLD = ('\033[0m', '\033[1m')
 
-RPC_TESTS_DIR = BUILDDIR + '/qa/rpc-tests/'
+RPC_TESTS_DIR = SRCDIR + '/qa/rpc-tests/'
 
 #If imported values are not defined then set to zero (or disabled)
 if 'ENABLE_WALLET' not in vars():
@@ -76,8 +77,6 @@ for arg in sys.argv[1:]:
 #Set env vars
 if "BITCOIND" not in os.environ:
     os.environ["BITCOIND"] = BUILDDIR + '/src/bitcoind' + EXEEXT
-if "BITCOINCLI" not in os.environ:
-    os.environ["BITCOINCLI"] = BUILDDIR + '/src/bitcoin-cli' + EXEEXT
 
 if EXEEXT == ".exe" and "-win" not in opts:
     # https://github.com/bitcoin/bitcoin/commit/d52802551752140cf41f0d9a225a43e84404d3e9
@@ -93,20 +92,27 @@ if not (ENABLE_WALLET == 1 and ENABLE_UTILS == 1 and ENABLE_BITCOIND == 1):
 if ENABLE_ZMQ:
     try:
         import zmq
-    except ImportError as e:
-        print("WARNING: \"import zmq\" failed. Set ENABLE_ZMQ=0 or " \
-            "to run zmq tests, see dependency info in /qa/README.md.")
-        ENABLE_ZMQ=0
+    except ImportError:
+        print("ERROR: \"import zmq\" failed. Set ENABLE_ZMQ=0 or "
+              "to run zmq tests, see dependency info in /qa/README.md.")
+        # ENABLE_ZMQ=0
+        raise
 
-#Tests
 testScripts = [
+    # longest test should go first, to favor running tests in parallel
+    'p2p-fullblocktest.py',
     'walletbackup.py',
     'bip68-112-113-p2p.py',
     'wallet.py',
+    'wallet-accounts.py',
+    'wallet-hd.py',
+    'wallet-dump.py',
     'listtransactions.py',
     'receivedby.py',
     'mempool_resurrect_test.py',
     'txn_doublespend.py --mineblock',
+    'p2p-segwit.py',
+    'segwit.py',
     'txn_clone.py',
     'getchaintips.py',
     'rawtransactions.py',
@@ -124,18 +130,22 @@ testScripts = [
     'nodehandling.py',
     'reindex.py',
     'decodescript.py',
-    'p2p-fullblocktest.py',
     'blockchain.py',
     'disablewallet.py',
     'sendheaders.py',
     'keypool.py',
+    'p2p-mempool.py',
     'prioritise_transaction.py',
     'invalidblockrequest.py',
     'invalidtxrequest.py',
     'abandonconflict.py',
     'p2p-versionbits-warning.py',
+    'preciousblock.py',
     'importprunedfunds.py',
     'signmessages.py',
+    'p2p-compactblocks.py',
+    'nulldummy.py',
+    'importmulti.py',
 ]
 if ENABLE_ZMQ:
     testScripts.append('zmq_test.py')
@@ -153,7 +163,7 @@ testScriptsExt = [
     'txn_clone.py --mineblock',
     'forknotify.py',
     'invalidateblock.py',
-#    'rpcbind_test.py', #temporary, bug in libevent, see #6655
+    'rpcbind_test.py',
     'smartfees.py',
     'maxblocksinflight.py',
     'p2p-acceptblock.py',
@@ -187,10 +197,11 @@ def runtests():
         coverage = RPCCoverage()
         print("Initializing coverage directory at %s\n" % coverage.dir)
     flags = ["--srcdir=%s/src" % BUILDDIR] + passon_args
+    flags.append("--cachedir=%s/qa/cache" % BUILDDIR)
     if coverage:
         flags.append(coverage.flag)
 
-    if len(test_list) > 1:
+    if len(test_list) > 1 and run_parallel > 1:
         # Populate cache
         subprocess.check_output([RPC_TESTS_DIR + 'create_cache.py'] + flags)
 
@@ -207,8 +218,8 @@ def runtests():
         time_sum += duration
 
         print('\n' + BOLD[1] + name + BOLD[0] + ":")
-        print(stdout)
-        print('stderr:\n' if not stderr == '' else '', stderr)
+        print('' if passed else stdout + '\n', end='')
+        print('' if stderr == '' else 'stderr:\n' + stderr + '\n', end='')
         results += "%s | %s | %s s\n" % (name.ljust(max_len_name), str(passed).ljust(6), duration)
         print("Pass: %s%s%s, Duration: %s s\n" % (BOLD[1], passed, BOLD[0], duration))
     results += BOLD[1] + "\n%s | %s | %s s (accumulated)" % ("ALL".ljust(max_len_name), str(all_passed).ljust(6), time_sum) + BOLD[0]
@@ -235,6 +246,10 @@ class RPCTestHandler:
         self.test_list = test_list
         self.flags = flags
         self.num_running = 0
+        # In case there is a graveyard of zombie bitcoinds, we can apply a
+        # pseudorandom offset to hopefully jump over them.
+        # (625 is PORT_RANGE/MAX_NODES)
+        self.portseed_offset = int(time.time() * 1000) % 625
         self.jobs = []
 
     def get_next(self):
@@ -242,22 +257,28 @@ class RPCTestHandler:
             # Add tests
             self.num_running += 1
             t = self.test_list.pop(0)
-            port_seed = ["--portseed=%s" % len(self.test_list)]
+            port_seed = ["--portseed={}".format(len(self.test_list) + self.portseed_offset)]
+            log_stdout = tempfile.SpooledTemporaryFile(max_size=2**16)
+            log_stderr = tempfile.SpooledTemporaryFile(max_size=2**16)
             self.jobs.append((t,
                               time.time(),
                               subprocess.Popen((RPC_TESTS_DIR + t).split() + self.flags + port_seed,
                                                universal_newlines=True,
-                                               stdout=subprocess.PIPE,
-                                               stderr=subprocess.PIPE)))
+                                               stdout=log_stdout,
+                                               stderr=log_stderr),
+                              log_stdout,
+                              log_stderr))
         if not self.jobs:
-            raise IndexError('%s from empty list' % __name__)
+            raise IndexError('pop from empty list')
         while True:
             # Return first proc that finishes
             time.sleep(.5)
             for j in self.jobs:
-                (name, time0, proc) = j
+                (name, time0, proc, log_out, log_err) = j
                 if proc.poll() is not None:
-                    (stdout, stderr) = proc.communicate(timeout=3)
+                    log_out.seek(0), log_err.seek(0)
+                    [stdout, stderr] = [l.read().decode('utf-8') for l in (log_out, log_err)]
+                    log_out.close(), log_err.close()
                     passed = stderr == "" and proc.returncode == 0
                     self.num_running -= 1
                     self.jobs.remove(j)

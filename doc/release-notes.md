@@ -16,47 +16,53 @@ To receive security and update notifications, please subscribe to:
 
   <https://bitcoincore.org/en/list/announcements/join/>
 
+Compatibility
+==============
+
+Microsoft ended support for Windows XP on [April 8th, 2014](https://www.microsoft.com/en-us/WindowsForBusiness/end-of-xp-support),
+an OS initially released in 2001. This means that not even critical security
+updates will be released anymore. Without security updates, using a bitcoin
+wallet on a XP machine is irresponsible at least.
+
+In addition to that, with 0.12.x there have been varied reports of Bitcoin Core
+randomly crashing on Windows XP. It is [not clear](https://github.com/bitcoin/bitcoin/issues/7681#issuecomment-217439891)
+what the source of these crashes is, but it is likely that upstream
+libraries such as Qt are no longer being tested on XP.
+
+We do not have time nor resources to provide support for an OS that is
+end-of-life. From 0.13.0 on, Windows XP is no longer supported. Users are
+suggested to upgrade to a newer version of Windows, or install an alternative OS
+that is supported.
+
+No attempt is made to prevent installing or running the software on Windows XP,
+you can still do so at your own risk, but do not expect it to work: do not
+report issues about Windows XP to the issue tracker.
+
 Notable changes
 ===============
 
-Example item
-----------------
-
-
-bitcoin-cli: arguments privacy
---------------------------------
-
-The RPC command line client gained a new argument, `-stdin`
-to read extra arguments from standard input, one per line until EOF/Ctrl-D.
-For example:
-
-    $ echo -e "mysecretcode\n120" | src/bitcoin-cli -stdin walletpassphrase
-
-It is recommended to use this for sensitive information such as wallet
-passphrases, as command-line arguments can usually be read from the process
-table by any user on the system.
-
-RPC low-level changes
+Low-level RPC changes
 ----------------------
 
-- `gettxoutsetinfo` UTXO hash (`hash_serialized`) has changed. There was a divergence between
-  32-bit and 64-bit platforms, and the txids were missing in the hashed data. This has been
-  fixed, but this means that the output will be different than from previous versions.
+- `importprunedfunds` only accepts two required arguments. Some versions accept
+  an optional third arg, which was always ignored. Make sure to never pass more
+  than two arguments.
 
-C++11 and Python 3
--------------------
+Removal of Priority Estimation
+------------------------------
 
-Various code modernizations have been done. The Bitcoin Core code base has
-started using C++11. This means that a C++11-capable compiler is now needed for
-building. Effectively this means GCC 4.7 or higher, or Clang 3.3 or higher.
+- Estimation of "priority" needed for a transaction to be included within a target
+  number of blocks has been removed.  The rpc calls are deprecated and will either
+  return -1 or 1e24 appropriately. The format for `fee_estimates.dat` has also
+  changed to no longer save these priority estimates. It will automatically be
+  converted to the new format which is not readable by prior versions of the
+  software.
 
-When cross-compiling for a target that doesn't have C++11 libraries, configure with
-`./configure --enable-glibc-back-compat ... LDFLAGS=-static-libstdc++`.
+- The concept of "priority" transactions is planned to be removed in the next
+  major version. To prepare for this, the default for the rate limit of priority
+  transactions (`-limitfreerelay`) has been set to `0` kB/minute.
 
-For running the functional tests in `qa/rpc-tests`, Python3.4 or higher is now
-required.
-
-0.13.0 Change log
+0.14.0 Change log
 =================
 
 Detailed release notes follow. This overview includes changes that affect
@@ -66,45 +72,19 @@ git merge commit are mentioned.
 
 ### RPC and REST
 
-Asm script outputs now contain OP_CHECKLOCKTIMEVERIFY in place of OP_NOP2
--------------------------------------------------------------------------
+UTXO set query (`GET /rest/getutxos/<checkmempool>/<txid>-<n>/<txid>-<n>/.../<txid>-<n>.<bin|hex|json>`) responses
+were changed to return status code HTTP_BAD_REQUEST (400) instead of HTTP_INTERNAL_SERVER_ERROR (500) when requests
+contain invalid parameters.
 
-OP_NOP2 has been renamed to OP_CHECKLOCKTIMEVERIFY by [BIP 
-65](https://github.com/bitcoin/bips/blob/master/bip-0065.mediawiki)
+The first boolean argument to `getaddednodeinfo` has been removed. This is an incompatible change.
 
-The following outputs are affected by this change:
-- RPC `getrawtransaction` (in verbose mode)
-- RPC `decoderawtransaction`
-- RPC `decodescript`
-- REST `/rest/tx/` (JSON format)
-- REST `/rest/block/` (JSON format when including extended tx details)
-- `bitcoin-tx -json`
-
-### ZMQ
-
-Each ZMQ notification now contains an up-counting sequence number that allows
-listeners to detect lost notifications.
-The sequence number is always the last element in a multi-part ZMQ notification and
-therefore backward compatible.
-Each message type has its own counter.
-(https://github.com/bitcoin/bitcoin/pull/7762)
+Call "getmininginfo" loses the "testnet" field in favor of the more generic "chain" (which has been present for years).
 
 ### Configuration and command-line options
 
 ### Block and transaction handling
 
 ### P2P protocol and network code
-
-The p2p alert system has been removed in #7692 and the 'alert' message is no longer supported.
-
-
-Fee filtering of invs (BIP 133)
-------------------------------------
-
-The optional new p2p message "feefilter" is implemented and the protocol
-version is bumped to 70013. Upon receiving a feefilter message from a peer,
-a node will not send invs for any transactions which do not meet the filter
-feerate. [BIP 133](https://github.com/bitcoin/bips/blob/master/bip-0133.mediawiki)
 
 ### Validation
 
@@ -118,3 +98,10 @@ feerate. [BIP 133](https://github.com/bitcoin/bips/blob/master/bip-0133.mediawik
 
 ### Miscellaneous
 
+Credits
+=======
+
+Thanks to everyone who directly contributed to this release:
+
+
+As well as everyone that helped translating on [Transifex](https://www.transifex.com/projects/p/bitcoin/).

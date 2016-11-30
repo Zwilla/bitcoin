@@ -20,7 +20,7 @@ from .util import (
     sync_blocks,
     sync_mempools,
     stop_nodes,
-    wait_bitcoinds,
+    stop_node,
     enable_coverage,
     check_json_precision,
     initialize_chain_clean,
@@ -47,7 +47,10 @@ class BitcoinTestFramework(object):
         if self.setup_clean_chain:
             initialize_chain_clean(self.options.tmpdir, self.num_nodes)
         else:
-            initialize_chain(self.options.tmpdir, self.num_nodes)
+            initialize_chain(self.options.tmpdir, self.num_nodes, self.options.cachedir)
+
+    def stop_node(self, num_node):
+        stop_node(self.nodes[num_node], num_node)
 
     def setup_nodes(self):
         return start_nodes(self.num_nodes, self.options.tmpdir)
@@ -77,7 +80,6 @@ class BitcoinTestFramework(object):
         """
         assert not self.is_network_split
         stop_nodes(self.nodes)
-        wait_bitcoinds()
         self.setup_network(True)
 
     def sync_all(self):
@@ -96,7 +98,6 @@ class BitcoinTestFramework(object):
         """
         assert self.is_network_split
         stop_nodes(self.nodes)
-        wait_bitcoinds()
         self.setup_network(False)
 
     def main(self):
@@ -108,6 +109,8 @@ class BitcoinTestFramework(object):
                           help="Don't stop bitcoinds after the test execution")
         parser.add_option("--srcdir", dest="srcdir", default=os.path.normpath(os.path.dirname(os.path.realpath(__file__))+"/../../../src"),
                           help="Source directory containing bitcoind/bitcoin-cli (default: %default)")
+        parser.add_option("--cachedir", dest="cachedir", default=os.path.normpath(os.path.dirname(os.path.realpath(__file__))+"/../../cache"),
+                          help="Directory for caching pregenerated datadirs")
         parser.add_option("--tmpdir", dest="tmpdir", default=tempfile.mkdtemp(prefix="test"),
                           help="Root directory for datadirs")
         parser.add_option("--tracerpc", dest="trace_rpc", default=False, action="store_true",
@@ -118,6 +121,9 @@ class BitcoinTestFramework(object):
                           help="Write tested RPC commands into this directory")
         self.add_options(parser)
         (self.options, self.args) = parser.parse_args()
+
+        # backup dir variable for removal at cleanup
+        self.options.root, self.options.tmpdir = self.options.tmpdir, self.options.tmpdir + '/' + str(self.options.port_seed)
 
         if self.options.trace_rpc:
             logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
@@ -133,16 +139,11 @@ class BitcoinTestFramework(object):
 
         success = False
         try:
-            if not os.path.isdir(self.options.tmpdir):
-                os.makedirs(self.options.tmpdir)
+            os.makedirs(self.options.tmpdir, exist_ok=False)
             self.setup_chain()
-
             self.setup_network()
-
             self.run_test()
-
             success = True
-
         except JSONRPCException as e:
             print("JSONRPC error: "+e.error['message'])
             traceback.print_tb(sys.exc_info()[2])
@@ -161,13 +162,16 @@ class BitcoinTestFramework(object):
         if not self.options.noshutdown:
             print("Stopping nodes")
             stop_nodes(self.nodes)
-            wait_bitcoinds()
         else:
             print("Note: bitcoinds were not stopped and may still be running")
 
-        if not self.options.nocleanup and not self.options.noshutdown:
+        if not self.options.nocleanup and not self.options.noshutdown and success:
             print("Cleaning up")
             shutil.rmtree(self.options.tmpdir)
+            if not os.listdir(self.options.root):
+                os.rmdir(self.options.root)
+        else:
+            print("Not cleaning up dir %s" % self.options.tmpdir)
 
         if success:
             print("Tests successful")
